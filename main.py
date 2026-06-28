@@ -1,4 +1,4 @@
-import os, re, tempfile, asyncio
+import os, re, tempfile, shutil
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
@@ -14,19 +14,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MAX_SECONDS = 7 * 60  # 420 წამი
+MAX_SECONDS = 7 * 60
 
-# ── helpers ─────────────────────────────────────────────────────────────
+# ── bot-detection bypass options ────────────────────────────────────────
+def base_opts():
+    return {
+        "quiet": True,
+        "noplaylist": True,
+        # Android client — Render IP-ებს არ ბლოკავს
+        "extractor_args": {"youtube": {"player_client": ["android"]}},
+        "http_headers": {
+            "User-Agent": (
+                "com.google.android.youtube/19.09.37 "
+                "(Linux; U; Android 11) gzip"
+            ),
+        },
+    }
 
-def extract_video_id(url: str) -> str | None:
-    patterns = [
-        r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})",
-    ]
-    for p in patterns:
-        m = re.search(p, url)
-        if m:
-            return m.group(1)
-    return None
+def extract_video_id(url: str):
+    m = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else None
 
 def safe_filename(title: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', "", title)[:80]
@@ -39,16 +46,17 @@ async def index():
 
 
 @app.get("/info")
-async def video_info(url: str = Query(..., description="YouTube URL")):
-    """ვიდეოს მეტადატა (სათაური, ხანგრძლივობა, thumbnail)"""
+async def video_info(url: str = Query(...)):
     vid_id = extract_video_id(url)
     if not vid_id:
         raise HTTPException(400, "Invalid YouTube URL")
 
-    ydl_opts = {"quiet": True, "skip_download": True, "noplaylist": True}
+    opts = {**base_opts(), "skip_download": True}
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=False)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(
+                f"https://www.youtube.com/watch?v={vid_id}", download=False
+            )
     except Exception as e:
         raise HTTPException(500, f"yt-dlp error: {e}")
 
@@ -64,17 +72,18 @@ async def video_info(url: str = Query(..., description="YouTube URL")):
 
 
 @app.get("/download")
-async def download_mp3(url: str = Query(..., description="YouTube URL")):
-    """MP3-ად გარდაქმნა და გადმოგზავნა"""
+async def download_mp3(url: str = Query(...)):
     vid_id = extract_video_id(url)
     if not vid_id:
         raise HTTPException(400, "Invalid YouTube URL")
 
-    # ჯერ ვამოწმებ ხანგრძლივობას
-    ydl_info_opts = {"quiet": True, "skip_download": True, "noplaylist": True}
+    # info check
+    info_opts = {**base_opts(), "skip_download": True}
     try:
-        with yt_dlp.YoutubeDL(ydl_info_opts) as ydl:
-            info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid_id}", download=False)
+        with yt_dlp.YoutubeDL(info_opts) as ydl:
+            info = ydl.extract_info(
+                f"https://www.youtube.com/watch?v={vid_id}", download=False
+            )
     except Exception as e:
         raise HTTPException(500, f"Info error: {e}")
 
@@ -84,38 +93,38 @@ async def download_mp3(url: str = Query(..., description="YouTube URL")):
 
     title = safe_filename(info.get("title", vid_id))
 
-    # temp dir-ში გადმოვიწერ
-    with tempfile.TemporaryDirectory() as tmpdir:
-        out_path = os.path.join(tmpdir, f"{title}.mp3")
-        ydl_dl_opts = {
-            "quiet":     True,
-            "format":    "bestaudio/best",
-            "outtmpl":   out_path,
-            "noplaylist": True,
-            "postprocessors": [{
-                "key":            "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
-        }
-        try:
-            with yt_dlp.YoutubeDL(ydl_dl_opts) as ydl:
-                ydl.download([f"https://www.youtube.com/watch?v={vid_id}"])
-        except Exception as e:
-            raise HTTPException(500, f"Download error: {e}")
+    # გადმოიწერა temp-ში, შემდეგ /tmp/ytmp3/-ში გადავიყვანთ რომ FileResponse-მა წაიკითხოს
+    out_dir = Path("/tmp/ytmp3")
+    out_dir.mkdir(exist_ok=True)
+    out_path = str(out_dir / f"{vid_id}.mp3")
 
-        # yt-dlp ზოგჯერ .mp3 სუფიქსს ამატებს ავტომატურად
-        mp3_file = Path(out_path)
-        if not mp3_file.exists():
-            candidates = list(Path(tmpdir).glob("*.mp3"))
-            if not candidates:
-                raise HTTPException(500, "MP3 ფაილი ვერ შეიქმნა")
-            mp3_file = candidates[0]
+    dl_opts = {
+        **base_opts(),
+        "format":   "bestaudio/best",
+        "outtmpl":  str(out_dir / f"{vid_id}.%(ext)s"),
+        "postprocessors": [{
+            "key":              "FFmpegExtractAudio",
+            "preferredcodec":   "mp3",
+            "preferredquality": "192",
+        }],
+    }
+    try:
+        with yt_dlp.YoutubeDL(dl_opts) as ydl:
+            ydl.download([f"https://www.youtube.com/watch?v={vid_id}"])
+    except Exception as e:
+        raise HTTPException(500, f"Download error: {e}")
 
-        # ვაბრუნებთ ფაილს — FastAPI წაიკითხავს სანამ temp dir-ი წაიშლება
-        return FileResponse(
-            path=str(mp3_file),
-            media_type="audio/mpeg",
-            filename=f"{title}.mp3",
-            headers={"Content-Disposition": f'attachment; filename="{title}.mp3"'}
-        )
+    mp3_file = Path(out_path)
+    if not mp3_file.exists():
+        candidates = list(out_dir.glob(f"{vid_id}*.mp3"))
+        if not candidates:
+            raise HTTPException(500, "MP3 ფაილი ვერ შეიქმნა")
+        mp3_file = candidates[0]
+
+    return FileResponse(
+        path=str(mp3_file),
+        media_type="audio/mpeg",
+        filename=f"{title}.mp3",
+        headers={"Content-Disposition": f'attachment; filename="{title}.mp3"'},
+        background=None,
+    )
