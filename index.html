@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>YT MP3 სერვერი</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Space+Grotesk:wght@600;700&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d0f14; --surface: #161920; --card: #1c2030;
+      --border: #252a3a; --accent: #ff3c5a; --accent2: #ff7043;
+      --text: #e8eaf0; --muted: #6b7280; --green: #22c55e; --r: 14px;
+    }
+    body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding: 60px 20px 80px; }
+
+    .logo { font-family: 'Space Grotesk', sans-serif; font-size: 2rem; font-weight: 700; background: linear-gradient(135deg,var(--accent),var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 8px; }
+    .sub { color: var(--muted); font-size: .9rem; margin-bottom: 40px; text-align: center; }
+
+    .box { background: var(--card); border: 1px solid var(--border); border-radius: var(--r); padding: 32px; width: 100%; max-width: 600px; }
+
+    .input-row { display: flex; gap: 10px; }
+    input[type=text] { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: .95rem; padding: 13px 16px; outline: none; transition: border-color .2s; }
+    input[type=text]:focus { border-color: var(--accent); }
+    input[type=text]::placeholder { color: var(--muted); }
+
+    .btn { background: linear-gradient(135deg,var(--accent),var(--accent2)); border: none; border-radius: 10px; color: #fff; cursor: pointer; font-family: 'Space Grotesk', sans-serif; font-size: .92rem; font-weight: 700; padding: 13px 22px; transition: opacity .2s, transform .15s; white-space: nowrap; }
+    .btn:hover { opacity: .88; transform: translateY(-1px); }
+    .btn:disabled { background: var(--border); cursor: default; transform: none; }
+
+    /* preview card */
+    #preview { display: none; margin-top: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+    .prev-img { width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block; }
+    .prev-body { padding: 16px; }
+    .prev-title { font-weight: 600; font-size: 1rem; margin-bottom: 6px; }
+    .prev-meta { color: var(--muted); font-size: .8rem; margin-bottom: 14px; }
+    .prev-duration { display: inline-block; font-size: .75rem; font-weight: 700; padding: 2px 10px; border-radius: 99px; margin-bottom: 14px; }
+    .eligible { background: linear-gradient(135deg,var(--accent),var(--accent2)); color: #fff; }
+    .not-eligible { background: var(--border); color: var(--muted); }
+
+    .btn-dl { width: 100%; padding: 13px; font-size: 1rem; border-radius: 10px; }
+    .btn-dl.done { background: linear-gradient(135deg,#16a34a,#22c55e); pointer-events: none; }
+
+    /* status */
+    #status { margin-top: 16px; font-size: .85rem; text-align: center; min-height: 20px; }
+    .err { color: var(--accent); }
+    .ok  { color: var(--green); }
+
+    /* recent */
+    #recent { width: 100%; max-width: 600px; margin-top: 32px; }
+    .rec-title { font-family: 'Space Grotesk', sans-serif; font-size: .85rem; color: var(--muted); margin-bottom: 12px; }
+    .rec-list { display: flex; flex-direction: column; gap: 8px; }
+    .rec-item { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: .82rem; cursor: pointer; transition: border-color .2s; }
+    .rec-item:hover { border-color: var(--accent); }
+    .rec-item span { color: var(--muted); white-space: nowrap; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { display: inline-block; animation: spin .7s linear infinite; }
+  </style>
+</head>
+<body>
+  <div class="logo">▶ YT MP3</div>
+  <p class="sub">ჩასვი YouTube ბმული — MP3 გადმოიწერება პირდაპირ ✓</p>
+
+  <div class="box">
+    <div class="input-row">
+      <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." />
+      <button class="btn" id="checkBtn" onclick="checkVideo()">შემოწმება</button>
+    </div>
+
+    <div id="preview">
+      <img id="prevImg" class="prev-img" src="" alt=""/>
+      <div class="prev-body">
+        <div id="prevTitle" class="prev-title"></div>
+        <div id="prevMeta"  class="prev-meta"></div>
+        <div id="prevDur"   class="prev-duration"></div>
+        <button class="btn btn-dl" id="dlBtn" onclick="startDownload()">⬇ MP3 გადმოიწეროს</button>
+      </div>
+    </div>
+
+    <div id="status"></div>
+  </div>
+
+  <div id="recent" style="display:none">
+    <div class="rec-title">📥 ბოლო გადმოწერები</div>
+    <div class="rec-list" id="recList"></div>
+  </div>
+
+<script>
+let currentUrl = '';
+const recent = JSON.parse(localStorage.getItem('ytmp3_recent') || '[]');
+renderRecent();
+
+document.getElementById('url').addEventListener('keydown', e => {
+  if (e.key === 'Enter') checkVideo();
+});
+
+function setStatus(msg, cls='') {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = cls;
+}
+
+async function checkVideo() {
+  const url = document.getElementById('url').value.trim();
+  if (!url) return;
+  currentUrl = url;
+
+  const checkBtn = document.getElementById('checkBtn');
+  checkBtn.disabled = true;
+  checkBtn.textContent = '⏳';
+  setStatus('');
+  document.getElementById('preview').style.display = 'none';
+
+  try {
+    const res  = await fetch(`/info?url=${encodeURIComponent(url)}`);
+    const data = await res.json();
+
+    if (!res.ok) { setStatus('❌ ' + (data.detail || 'შეცდომა'), 'err'); return; }
+
+    document.getElementById('prevImg').src   = data.thumbnail;
+    document.getElementById('prevTitle').textContent = data.title;
+    const m = Math.floor(data.duration/60), s = data.duration % 60;
+    document.getElementById('prevMeta').textContent  = `${data.channel} · ${m}:${String(s).padStart(2,'0')}`;
+
+    const durEl = document.getElementById('prevDur');
+    const dlBtn = document.getElementById('dlBtn');
+    if (data.eligible) {
+      durEl.textContent = `✓ ${m}:${String(s).padStart(2,'0')} — MP3 გადმოსაწეირია`;
+      durEl.className   = 'prev-duration eligible';
+      dlBtn.disabled    = false;
+      dlBtn.textContent = '⬇ MP3 გადმოიწეროს';
+      dlBtn.className   = 'btn btn-dl';
+    } else {
+      durEl.textContent = `✗ ${m}:${String(s).padStart(2,'0')} — 7 წუთზე მეტია`;
+      durEl.className   = 'prev-duration not-eligible';
+      dlBtn.disabled    = true;
+      dlBtn.textContent = '⬇ MP3 გადმოიწეროს';
+    }
+    document.getElementById('preview').style.display = 'block';
+
+  } catch(e) {
+    setStatus('❌ სერვერთან კავშირი ვერ მოხერხდა', 'err');
+  } finally {
+    checkBtn.disabled   = false;
+    checkBtn.textContent = 'შემოწმება';
+  }
+}
+
+function startDownload() {
+  const dlBtn  = document.getElementById('dlBtn');
+  const title  = document.getElementById('prevTitle').textContent;
+  dlBtn.disabled   = true;
+  dlBtn.textContent = '⏳ მუშავდება...';
+  setStatus('🎵 MP3 მზადდება, გთხოვ დაიცადო...', '');
+
+  // ჩამოტვირთვა — iframe-ის ხრიკი (FileResponse პირდაპირ ბრაუზერი გადმოიწერს)
+  const a = document.createElement('a');
+  a.href = `/download?url=${encodeURIComponent(currentUrl)}`;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  setTimeout(() => {
+    dlBtn.className   = 'btn btn-dl done';
+    dlBtn.textContent = '✓ გადმოიწერა!';
+    setStatus('✓ MP3 წარმატებით გადმოიწერა!', 'ok');
+    addRecent(title, currentUrl);
+  }, 2000);
+}
+
+function addRecent(title, url) {
+  const item = { title, url, time: Date.now() };
+  const filtered = recent.filter(r => r.url !== url);
+  filtered.unshift(item);
+  if (filtered.length > 5) filtered.pop();
+  recent.length = 0;
+  filtered.forEach(x => recent.push(x));
+  localStorage.setItem('ytmp3_recent', JSON.stringify(recent));
+  renderRecent();
+}
+
+function renderRecent() {
+  const wrap = document.getElementById('recent');
+  const list = document.getElementById('recList');
+  if (!recent.length) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  list.innerHTML = recent.map(r => `
+    <div class="rec-item" onclick="document.getElementById('url').value='${r.url}';checkVideo()">
+      <div>🎵 ${r.title || r.url}</div>
+      <span>${timeAgo(r.time)}</span>
+    </div>`).join('');
+}
+
+function timeAgo(ts) {
+  const d = Math.floor((Date.now()-ts)/60000);
+  if (d < 1)  return 'ახლახანს';
+  if (d < 60) return d + ' წთ წინ';
+  return Math.floor(d/60) + ' სთ წინ';
+}
+</script>
+</body>
+</html>
